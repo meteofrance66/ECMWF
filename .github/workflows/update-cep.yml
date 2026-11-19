@@ -12,7 +12,7 @@ on:
     # Actions utilise UTC : 05-10 couvre 07-11 en France selon la saison,
     # et 16-22 couvre 18-23. Le script quitte immédiatement si le run le
     # plus récent est déjà publié, sans reconstruire ni pousser data.
-    - cron: "0 5-10,16-22 * * *"
+    - cron: "54 9 * * *"
 
 permissions:
   contents: write
