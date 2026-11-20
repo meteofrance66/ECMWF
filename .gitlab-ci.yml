@@ -1,0 +1,111 @@
+stages:
+  - build
+  - publish
+
+variables:
+  PYTHONUNBUFFERED: "1"
+  # Dépôt GitLab du modèle (adresse de la branche data lue par le site).
+  DEPOT: "alertes-meteo-group/ECMWF"
+  # Mettre FORCE=true (lancement manuel) pour reconstruire même si le run est déjà publié.
+  FORCE: "false"
+
+default:
+  tags:
+    - vps
+    - cep
+  timeout: 6h
+
+# Équivalent de .github/workflows/update-cep.yml, sur le runner du VPS.
+build:
+  stage: build
+  cache:
+    paths:
+      - .cache/pip
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  script:
+    - python3.12 -m venv .venv
+    - source .venv/bin/activate
+    - python -m pip install --disable-pip-version-check -r requirements.txt
+    - |
+      # Coupures passagères de la source (connexion fermée, 429/5xx, délai dépassé) : jusqu'à 3 tentatives.
+      set -o pipefail
+      extra=""
+      if [ "$FORCE" = "true" ]; then extra="--force"; fi
+      for attempt in 1 2 3; do
+        if python scripts/update_cep_france.py \
+          --catalog config/communes-france.json \
+          --output-dir build/national \
+          --forecast-hours 360 \
+          --current-metadata-url "https://gitlab.com/${DEPOT}/-/raw/data/index.json" \
+          $extra 2>&1 | tee tentative.log; then
+          break
+        fi
+        if [ "$attempt" -eq 3 ] || ! grep -qiE 'RemoteDisconnected|Connection(Error|Reset|refused| aborted)|IncompleteRead|ReadTimeout|ConnectTimeout|ChunkedEncodingError|429|50[234]' tentative.log; then
+          echo "Echec (tentative $attempt)"
+          exit 1
+        fi
+        echo "Erreur reseau passagere (tentative $attempt), nouvelle tentative dans 90 s"
+        sleep 90
+      done
+    - |
+      if test -f build/national/index.json; then
+        python - <<'PY'
+      import json
+      from datetime import datetime, timedelta
+      from pathlib import Path
+
+      root = Path("build/national")
+      index = json.loads((root / "index.json").read_text(encoding="utf-8"))
+      maps = json.loads((root / "maps/index.json").read_text(encoding="utf-8"))
+      assert index["status"] == "ok"
+      assert index["coverage"]["communes"] == 34746
+      assert index["coverage"]["departments"] == 96
+      assert len(maps["layers"]) >= 8
+      assert len(maps["steps"]) == 65
+      assert (root / "departements/66.json").is_file()
+      assert index["model"]["forecast_hours_requested"] == 360
+      assert index["synoptic"]["status"] == "ok"
+      assert index["synoptic"]["steps"] >= 1
+      department = json.loads((root / "departements/66.json").read_text(encoding="utf-8"))
+      run = datetime.fromisoformat(index["model"]["run_time"].replace("Z", "+00:00"))
+      end = datetime.fromisoformat(department["forecast"][-1][0].replace("Z", "+00:00"))
+      assert department["rain_radius_km"] == 10
+      assert end == run + timedelta(hours=360)
+      assert len(department["forecast"]) == 85
+      print("Validation OK")
+      PY
+      else
+        echo "Aucune nouvelle publication CEP complete a envoyer."
+      fi
+  artifacts:
+    paths:
+      - build/
+    expire_in: 2 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+
+# Publication de la branche data, seulement s'il y a une nouvelle publication.
+# Necessite la variable CI/CD masquee GITLAB_PUSH_TOKEN (write_repository).
+publish-data:
+  stage: publish
+  needs: [build]
+  script:
+    - test -f build/national/index.json || { echo "Rien a publier."; exit 0; }
+    - PUB=$(mktemp -d) && cp -a build/national/. "$PUB/" && touch "$PUB/.nojekyll"
+    - cd "$PUB"
+    - git init -b data
+    - git config user.name "gitlab-ci[bot]"
+    - git config user.email "gitlab-ci@alertes-meteo-group.invalid"
+    - git add --all
+    - git commit -q -m "Donnees CEP $(date -u +'%Y-%m-%d %H:%M UTC')"
+    - git remote add origin "https://oauth2:${GITLAB_PUSH_TOKEN}@gitlab.com/${DEPOT}.git"
+    - git push -q --force origin data
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "trigger"
