@@ -7,10 +7,6 @@ on:
         description: "Forcer la republication même si déjà publié aujourd'hui (ex. nouvelles villes ajoutées au catalogue)"
         type: boolean
         default: false
-  schedule:
-    # Une production quotidienne, décalée de la France pour ne pas se
-    # concurrencer sur les runners.
-    - cron: "0 9 * * *"
 
 permissions:
   contents: write

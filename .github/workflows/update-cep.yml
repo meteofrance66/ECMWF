@@ -7,12 +7,6 @@ on:
         description: "Forcer la reconstruction même si le run est déjà publié (ex. changement de code sans nouveau run IFS)"
         type: boolean
         default: false
-  schedule:
-    # Vérification horaire des deux fenêtres de disponibilité IFS. GitHub
-    # Actions utilise UTC : 05-10 couvre 07-11 en France selon la saison,
-    # et 16-22 couvre 18-23. Le script quitte immédiatement si le run le
-    # plus récent est déjà publié, sans reconstruire ni pousser data.
-    - cron: "54 9 * * *"
 
 permissions:
   contents: write
